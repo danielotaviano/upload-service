@@ -12,7 +12,8 @@
     File: <input type="file" id="f" />
     <button id="btnUpload">Read & Upload</button>
     <div id="divOutput"></div>
-
+    <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+    <script src="//cdn.jsdelivr.net/npm/bluebird@3.7.2/js/browser/bluebird.min.js"></script>
     <script>
       const btnUpload = document.getElementById("btnUpload");
       const divOutput = document.getElementById("divOutput");
@@ -24,29 +25,76 @@
         const theFile = f.files[0];
 
         fileReader.onloadend = async (e) => {
-          const CHUNK_SIZE = 1048576 * 3; // 3mb
+          const CHUNK_SIZE = 1024 * 1024 * 5; // 5mb
           const CHUNK_COUNT = e.target.result.byteLength / CHUNK_SIZE;
+          console.log(CHUNK_COUNT)
 
-          for (let i = 0; i < CHUNK_COUNT + 1; i++) {
+          const { fileId, fileKey } = await fetch(
+            "http://localhost:3000/uploads/init",
+            {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                name: theFile.name,
+              }),
+            }
+          ).then((r) => r.json());
+
+          const { parts } = await fetch(
+            "http://localhost:3000/uploads/getUrls",
+            {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                fileKey: fileKey,
+                fileId: fileId,
+                parts: Math.ceil(CHUNK_COUNT),
+              }),
+            }
+          ).then((r) => r.json());
+
+          parts.sort((a, b) => a.PartNumber - b.PartNumber);
+          const finished = [];
+
+          const fn = async (i) => {
             const chunk = e.target.result.slice(
               i * CHUNK_SIZE,
               i * CHUNK_SIZE + CHUNK_SIZE
             );
 
-            await fetch("http://localhost:3000/upload", {
-              method: "POST",
+            const response = await axios.put(parts[i].signedUrl, chunk, {
               headers: {
-                "content-type": "application/octet-stream",
-                "content-length": chunk.length,
-                "file-name": theFile.name,
+                "Content-Type": "",
               },
-              body: chunk,
             });
-            divOutput.textContent = Math.floor(i * 100/CHUNK_COUNT,0) + "%"
 
+            const etag = response.headers["etag"]
 
-
+            finished.push({
+              PartNumber: parts[i].PartNumber,
+              ETag: etag.replaceAll('"', ""),
+            });
           }
+          const n = []
+
+          for (let i = 0; i < CHUNK_COUNT; i++) {
+            n.push(i);
+          }
+
+          await Promise.map(n, fn, { concurrency: 15 })
+
+          
+          const response = await axios.post("http://localhost:3000/uploads/finish", {
+            fileId: fileId,
+            fileKey: fileKey,
+            parts: finished,
+          });
+
+          console.log(response);
         };
 
         fileReader.readAsArrayBuffer(theFile);
